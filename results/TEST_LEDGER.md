@@ -1,0 +1,9 @@
+- 2026-11-09 01:29 test run: config `plain` (30744d4d22f7), sets gsm8k,math, 300 answers to do
+- 2026-11-09 02:41 test run: config `plain` (30744d4d22f7), sets aime, 120 answers to do, repeats 4
+- 2026-11-09 05:01 test run: config `think` (d38b3893f7db), sets gsm8k,math, 300 answers to do, repeats 1
+- 2026-11-09 06:24 test run: config `think` (d38b3893f7db), sets aime, 60 answers to do, repeats 2
+- 2026-11-09 12:24 looked at test: voting analysis of existing `plain` AIME answers (no new runs, nothing tuned)
+- 2026-11-10 06:19 test run: rescue of `plain`, 65 answers to rescue
+- 2026-11-10 06:55 test run: exact replay of `think` cut-off answers to recover reasoning, 17 answers (verdicts unchanged)
+- 2026-11-10 07:07 test run: config `think-b` (d38b3893f7db), sets aime, 60 answers to do, repeats 2
+- 2026-11-10 12:36 test run: rescue of `think-b`, 13 answers to rescue

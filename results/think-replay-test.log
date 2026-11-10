@@ -1,0 +1,3 @@
+17 answers to replay
+  aime2026-10 r0: MISMATCH (tokens 32000 vs 32000, reasoning 71492 vs 72446 chars) 649s
+Not deterministic: replaying only some answers would bias the comparison. Rerun the whole config instead.

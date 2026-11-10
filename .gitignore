@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+external/matharena/*.parquet
+paper/*.log
+paper/*.aux
+paper/*.xdv
+.DS_Store

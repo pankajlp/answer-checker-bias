@@ -1,0 +1,263 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{fontspec}
+\setmonofont{Menlo}[Scale=0.82]
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=*}
+\setlength{\emergencystretch}{3em}
+\usepackage[htt]{hyphenat}
+
+\input{numbers}
+
+\newcommand{\repo}{\url{https://github.com/pankajlp/answer-checker-bias}}
+
+\title{Same Answers, Different Leaderboards:\\Answer-Checker Errors Depend on Who Wrote the Answer}
+\author{Pankaj Kumar\\Independent researcher\\\small\repo}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Final-answer math benchmarks rely on an automatic \emph{answer checker} that decides whether a model's free-text answer matches the reference.
+Checker errors are usually treated as small, random noise that lowers every model's score a little.
+We test that assumption by re-grading \maAnswers{} released answers from \maModels{} models on HMMT February 2025 (MathArena) with three rule-based checkers, using MathArena's verdicts, audited by hand, as the reference.
+Checker errors are not random: after controlling for problem difficulty, the rate at which a checker rejects \emph{correct} answers depends strongly on which model wrote them (problem-stratified permutation test, $p<0.001$ for all three checkers; $p=\mathverifyPermNoGrok$ for Math-Verify after removing its most affected model).
+The errors follow each model's writing style: Unicode square roots, answers boxed as one-column matrices, zero-padded integers, equations inside the box.
+As a result the checker reorders the leaderboard: the original MATH-paper checker moves \hendrycksModelsMovedFive{} models by five or more places and drops GPT-5.2 (high) from \#\gptRefRank{} to \#\gptHenRank{}; Math-Verify, the most accurate checker tested, still costs one model \grokMVDrop{} points.
+In a controlled pilot on our own model, the same mechanism made both public checkers understate the accuracy gain from enabling step-by-step thinking by about 30\% (+\pilotGainMathverify{} instead of +\pilotGainOurs{} points), because thinking changed how answers were written.
+We argue that checker error should be treated as \emph{differential misclassification}, and that comparisons between models or methods should report checker disagreement per system. Code, data and every number in this paper are reproducible from the accompanying repository.
+\end{abstract}
+
+\section{Introduction}
+
+Benchmarks such as MATH~\citep{hendrycks2021math}, GSM8K~\citep{cobbe2021gsm8k}, MATH-500~\citep{lightman2023verify} and competition sets like AIME and HMMT~\citep{balunovic2025matharena} score a model by extracting its final answer and comparing it with a reference.
+The comparison is done by a program, the \emph{answer checker}. Checkers range from string normalisation (the \texttt{is\_equiv} function released with MATH) to symbolic parsers such as Math-Verify~\citep{mathverify}.
+
+It is well known that checkers make mistakes, mostly by rejecting correct answers written in an unexpected form~\citep{huang2025verifiers,xu2025tinyv,xin2026verifier}.
+The usual implicit assumption is that these mistakes are \emph{non-differential}: they lower all models' scores by a similar amount, so rankings and comparisons survive.
+Epidemiology has a name for the alternative, \emph{differential misclassification}: when measurement error depends on the exposure being compared, it can bias a comparison in either direction, including creating or hiding an effect~\citep{rothman2008modern}.
+In model evaluation, the ``exposure'' is the model or method. Different models write answers differently, and a method such as reinforcement learning, distillation or step-by-step thinking changes how a model writes. If a checker's errors depend on writing style, they depend on the system being evaluated.
+
+We test this directly. Our contributions:
+\begin{enumerate}
+  \item A re-grading of all \maAnswers{} released answers (\maModels{} models $\times$ \maProblems{} problems $\times$ 4 attempts) from MathArena's HMMT February 2025 evaluation with three checkers, against MathArena's own verdicts, with a hand audit of every Math-Verify disagreement and of random samples of the others (\S\ref{sec:setup}).
+  \item A problem-stratified permutation test showing that, for every checker, the rate of rejecting correct answers depends on the model beyond what problem difficulty explains (\S\ref{sec:diff}).
+  \item A measurement of the effect on the leaderboard (\S\ref{sec:rank}), and a description of the answer formats that drive it (\S\ref{sec:styles}).
+  \item A controlled pilot showing the same mechanism inside a single model: enabling thinking changed answer style, and two public checkers understated its benefit by about 30\% (\S\ref{sec:pilot}).
+\end{enumerate}
+
+\section{Related work}
+
+\paragraph{Checker reliability.}
+\citet{huang2025verifiers} study rule-based and model-based verifiers used as rewards in reinforcement learning, and find that rule-based checkers reject many correct answers in unusual formats while model-based judges can be fooled.
+TinyV~\citep{xu2025tinyv} shows that such false negatives slow down RL training and adds a small model to catch them.
+\citet{xin2026verifier} audits four verifiers with constructed, provably equivalent answer variants and finds that most failures come from whitespace and punctuation, and that self-validation rates of different implementations span 41 points.
+These works measure \emph{how often} and \emph{on which answer forms} checkers fail. We ask a different question: whether the failures fall unevenly on \emph{the systems being compared}, using real model outputs, and what that does to rankings.
+
+\paragraph{Checker choice changes conclusions.}
+Closest to our question, \citet{munjal2026instruct} report in a side analysis that the gap between Qwen3-14B base and instruct models shrinks from 10.8 to 0.8 points when a regex grader is replaced by Math-Verify, and that the direction flips for another model. They do not decompose which answers were misjudged or by which system.
+MathArena itself mitigates format errors by asking a model to restate unparseable answers and by reviewing disagreements with an LLM judge~\citep{dekoninck2026platform}.
+
+\paragraph{Other sources of evaluation error.}
+Seed variance on small sets~\citep{hochlehnert2025sober}, errors in answer keys~\citep{vendrow2025reliability}, token budgets~\citep{desouza2026budget} and the general structure of measurement error in LLM pipelines~\citep{messing2026hidden} are studied elsewhere. Checker error is one more term in this error budget; our point is that it is not exchangeable across systems.
+
+\section{Setup}\label{sec:setup}
+
+\paragraph{Data.}
+MathArena released the full outputs of its HMMT February 2025 evaluation (\texttt{MathArena/hmmt\_feb\_2025\_outputs}, revision \texttt{e3fb6c7}, CC~BY-NC-SA~4.0): \maModels{} models, \maProblems{} problems, 4 attempts each, \maAnswers{} answers, each with MathArena's verdict. HMMT answers include surds, products of factorials and lists of roots, so they exercise checkers more than integer-answer sets such as AIME.
+
+\paragraph{Checkers.}
+\begin{itemize}
+  \item \textbf{Math-Verify} 0.9.0~\citep{mathverify}, as used by LightEval and Open-R1: \texttt{verify(parse(\$gold\$), parse(answer))} on the full answer.
+  \item \textbf{Hendrycks}: \texttt{is\_equiv} from the MATH repository~\citep{hendrycks2021math}, applied to the last \verb|\boxed{}| expression; still common in evaluation harnesses.
+  \item \textbf{Ours}: the rule-based checker of our benchmark (string normalisation plus numeric and symbolic comparison). It was developed on outputs of a different model and was not tuned on MathArena data. We include it as a third, independent rule-based checker, not as a proposal.
+\end{itemize}
+
+\paragraph{Reference and audit.}
+We use MathArena's verdicts as the reference. To check them, we read every one of the \the\numexpr\mathverifyFN+\mathverifyFP\relax{} answers where Math-Verify and MathArena disagree, 30 random answers that Hendrycks rejects but MathArena accepts, 30 such answers for our checker, and 40 random answers that all four judges mark wrong (to look for errors shared by everyone).
+MathArena was right in 23 of the 26 Math-Verify disagreements; the other three are decimal approximations of $1-2/\pi$ (e.g.\ $0.363380228\ldots$), which MathArena rejects and Math-Verify accepts, a matter of grading policy rather than error.
+All 60 sampled Hendrycks and ours rejections were correct values in another form, and none of the 40 universally rejected answers was correct.
+Details and the full list are in Appendix~\ref{app:audit}.
+The audit was done by a single rater (the author); Section~\ref{sec:limits} discusses this.
+
+\paragraph{Test for differential error.}
+Restrict to the \maCorrect{} answers MathArena marks correct and let $y_i=1$ if the checker rejects answer $i$.
+Centre each $y_i$ on the mean rejection rate of its problem, $e_i=y_i-\bar y_{p(i)}$, so that ``strong models attempt the same problems but solve harder ones, whose answers are harder to check'' is controlled for.
+The statistic is the between-model sum of squares $T=\sum_m \big(\sum_{i\in m} e_i\big)^2/n_m$.
+Under the null hypothesis that rejection does not depend on the model given the problem, model labels are exchangeable within a problem; we shuffle them within each problem 10{,}000 times (fixed seed) and report $(\#\{T^*\ge T\}+1)/10001$.
+A model's \emph{excess miss rate} is $\frac{1}{n_m}\sum_{i\in m}e_i$: how many more of its correct answers the checker rejects than its problems predict.
+
+\section{Results}
+
+\subsection{Overall agreement}
+
+\begin{table}[t]
+\centering
+\caption{Agreement with MathArena's verdicts on \maAnswers{} answers (\maCorrect{} marked correct).}
+\label{tab:agree}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+ & Correct answers & Wrong answers & Rank & Models moved\\
+Checker & rejected & accepted & correlation & $\ge$5 places\\
+\midrule
+Math-Verify 0.9.0 & \mathverifyFN{} (\mathverifyFNrate\%) & \mathverifyFP{} & \mathverifySpearman{} & \mathverifyModelsMovedFive{} \\
+Ours              & \oursFN{} (\oursFNrate\%) & \oursFP{} & \oursSpearman{} & \oursModelsMovedFive{} \\
+Hendrycks \texttt{is\_equiv} & \hendrycksFN{} (\hendrycksFNrate\%) & \hendrycksFP{} & \hendrycksSpearman{} & \hendrycksModelsMovedFive{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:agree} shows that the checkers' errors are almost all false negatives: correct answers rejected. Math-Verify is by far the most accurate (\mathverifyFN{} rejections in \maCorrect{} correct answers), our checker rejects \oursFN{}, and the Hendrycks normaliser rejects \hendrycksFN{}, almost one correct answer in ten. Rank correlations with MathArena's leaderboard look reassuring (0.97--0.999), but, as we show next, they hide large moves for particular models.
+
+\subsection{Errors depend on the model}\label{sec:diff}
+
+For all three checkers, rejection of correct answers depends on the model beyond what the problem explains ($p<0.001$ for each).
+Because one model, Grok 3 Mini (low), has an unusual output format (\S\ref{sec:styles}) and could drive the result alone, we repeat the test without it: Hendrycks $p\,\hendrycksPermNoGrok$, ours $p\,\oursPermNoGrok$, Math-Verify $p=\mathverifyPermNoGrok$.
+Figure~\ref{fig:excess} shows the excess miss rate of each model.
+Beyond Grok 3 Mini (low), Hendrycks rejects \henGptOss{} percentage points more of GPT OSS 120B (high)'s correct answers than its problems predict, and \henLowExcess{} points fewer of \henLowExcessModel's.
+Math-Verify's few misses are also concentrated: of its \mathverifyFN{} rejections, \mvMissGrok{} come from Grok 3 Mini (low) and \mvMissOseries{} from OpenAI's o-series (o1, o4-mini), with \mvMissOther{} spread over all other models.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth, height=6.2cm,
+  xlabel={Models, sorted by Hendrycks excess miss rate},
+  ylabel={Excess miss rate (pp)},
+  xmin=-1, xmax=64, ymin=-10, ymax=26,
+  xtick=\empty, grid=major, grid style={gray!20},
+  legend style={at={(0.02,0.80)}, anchor=north west, font=\small}, legend cell align=left,
+  clip=true,
+]
+\addplot[only marks, mark=*, mark size=1.6pt, color=red!70!black] table[x=idx, y=hen] {data/excess.dat};
+\addlegendentry{Hendrycks \texttt{is\_equiv}}
+\addplot[only marks, mark=triangle*, mark size=2pt, color=blue!70!black] table[x=idx, y=mv] {data/excess.dat};
+\addlegendentry{Math-Verify}
+\draw[gray] (axis cs:-1,0) -- (axis cs:64,0);
+\node[anchor=east, font=\scriptsize] at (axis cs:62.3,24.6) {Grok 3 Mini (low): Hendrycks +\henTopExcess{} (off scale) $\uparrow$};
+\node[anchor=east, font=\scriptsize] at (axis cs:61.6,21.6) {Claude 3.7 Sonnet (Think)};
+\node[anchor=east, font=\scriptsize] at (axis cs:60.6,14.2) {GPT OSS 120B (high)};
+\node[anchor=east, font=\scriptsize] at (axis cs:59.6,9.1) {o4-mini (medium)};
+\node[anchor=west, font=\scriptsize] at (axis cs:1.5,-8.6) {Gemini 2.5 Pro};
+\end{axis}
+\end{tikzpicture}
+\caption{Excess miss rate per model: the share of a model's correct answers that a checker rejects, minus the share expected from the problems it solved (percentage points). Under non-differential error all points would scatter tightly around zero. Each model has up to 120 answers.}
+\label{fig:excess}
+\end{figure}
+
+\subsection{Effect on the leaderboard}\label{sec:rank}
+
+\begin{table}[t]
+\centering
+\caption{Models whose rank moves most under the Hendrycks checker (accuracy \% over 120 answers, and rank among \maModels{} models; ties share a rank).}
+\label{tab:rank}
+\small
+\begin{tabular}{lrrrrrr}
+\toprule
+ & \multicolumn{2}{c}{MathArena} & \multicolumn{2}{c}{Hendrycks} & \multicolumn{2}{c}{Math-Verify}\\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Model & Acc. & Rank & Acc. & Rank & Acc. & Rank\\
+\midrule
+\csname @@input\endcsname data/rankshift_rows.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:rank} lists the largest moves. Under the Hendrycks checker, \hendrycksModelsMoved{} of \maModels{} models change rank and \hendrycksModelsMovedFive{} move by five or more places.
+The top two models, GPT-5.2 at two reasoning settings, fall to \#8 and \#\gptHenRank{}; GPT OSS 120B (high) falls from \#15 to \#26.
+Math-Verify is far more stable (\mathverifyModelsMoved{} models change rank, mostly by one or two places among near-ties), but its errors are not harmless either: Grok 3 Mini (low) loses \grokMVDrop{} points and drops from \#\grokRefRank{} to \#\grokMVRank{}.
+A rank correlation of \hendrycksSpearman{} is therefore compatible with a misleading leaderboard for the systems people care about most.
+
+\subsection{Which answer styles fail}\label{sec:styles}
+
+Reading the rejected answers shows that the failures follow each model's habits:
+\begin{itemize}
+  \item \textbf{Unicode mathematics.} o4-mini and o1 often write \texttt{√6} or \texttt{√23−2√3} (Unicode root and minus signs) instead of \LaTeX, inside or outside \verb|\boxed{}|; Math-Verify does not parse them.
+  \item \textbf{Matrix-boxed answers.} Grok 3 Mini (low) frequently boxes its answer as a one-column matrix, one token per row (e.g.\ \verb|\begin{matrix} 3 \\ 3 \\ 7 \\ 5 \end{matrix}| for 3375), and zero-pads integers (\texttt{00029}). MathArena's judge reads these as the intended value; all three rule-based checkers do not.
+  \item \textbf{Equations and labels inside the box.} For example \verb|\boxed{XP = \sqrt{23}-2\sqrt3}| or a box containing the whole sum followed by ${}=1-\frac{2}{\pi}$. Hendrycks compares strings and fails; Math-Verify sometimes picks the wrong side.
+  \item \textbf{Equivalent but differently arranged values.} $\frac{9}{\sqrt{23}}$ for $\frac{9\sqrt{23}}{23}$, $\frac{\sqrt{570}}{12}$ for $\sqrt{95/24}$, $26!\cdot 2^{25}$ for $2^{25}\cdot 26!$, roots listed in a different order, or an unsimplified nested radical $2\sqrt{197+28\sqrt{37}}=14+4\sqrt{37}$. String normalisation fails on all of these; symbolic checkers on some.
+  \item \textbf{Unfinished answers credited.} In the opposite direction, Math-Verify accepted one answer that was cut off mid-reasoning by taking a number from the working (GPT OSS 20B), a failure that favours models whose answers are often truncated.
+\end{itemize}
+Model families differ in exactly these habits, which is why the error is differential.
+
+\section{The same mechanism inside one model}\label{sec:pilot}
+
+Differences between models are one case; a more consequential one is a comparison between two versions of the same model, as in a paper claiming that a training or inference method improves reasoning. If the method changes writing style, checker error can bias the measured improvement.
+
+We ran Qwen3.8 27B locally (Ollama) on held-out test splits of GSM8K (150 questions) and MATH-500 (150), once with thinking disabled (\emph{plain}) and once with step-by-step thinking enabled, one attempt each with fixed seeds.
+All \pilotAllAnswers{} answers our benchmark had produced were graded by the three checkers; we read every one of the \pilotDisagree{} answers on which any two disagreed and established the true verdict by hand.
+
+\begin{table}[t]
+\centering
+\caption{Measured accuracy of plain vs.\ thinking on the same \pilotN{} test questions (GSM8K + MATH-500).}
+\label{tab:pilot}
+\begin{tabular}{lrrr}
+\toprule
+ & True (adjudicated) & Math-Verify & Hendrycks\\
+\midrule
+Plain    & \pilotPlainOurs\% & \pilotPlainMathverify\% & \pilotPlainHendrycks\% \\
+Thinking & \pilotThinkOurs\% & \pilotThinkMathverify\% & \pilotThinkHendrycks\% \\
+\midrule
+Measured gain & \textbf{+\pilotGainOurs} & +\pilotGainMathverify & +\pilotGainHendrycks\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both public checkers report a gain of +\pilotGainMathverify{} points where the true gain is +\pilotGainOurs{} (Table~\ref{tab:pilot}).
+The mechanism is the one seen on MathArena. Thinking answers were more carefully typeset (\verb|(-2,\,1)| with thin spaces, \verb|\mathbf{v} = \begin{pmatrix}|\ldots, \texttt{55°}, \texttt{131,250}), and both checkers rejected more correct thinking answers than correct plain ones (Math-Verify \pilotThinkMathverifyFN{} vs.\ \pilotPlainMathverifyFN{}; Hendrycks \pilotThinkHendrycksFN{} vs.\ \pilotPlainHendrycksFN{}).
+In the other direction, Math-Verify credited \pilotPlainMathverifyFP{} plain answer that had been cut off before giving an answer; plain answers are cut off far more often.
+This pilot is small: the difference in Math-Verify misses, 3 vs.\ 0, is not statistically distinguishable from chance on its own. We report it because its direction and mechanism match the large-scale result, and because it shows how the problem would appear in a typical ``method improves reasoning'' paper.
+
+\section{Recommendations}
+
+\begin{enumerate}
+  \item \textbf{Report checker disagreement per system.} When comparing models or methods, grade with at least two checkers and report, for each system, how many answers they disagree on. Disagreement concentrated in one system is a warning sign that a single aggregate error rate cannot reveal.
+  \item \textbf{Adjudicate disagreements before claiming a difference.} Disagreements are usually few (\the\numexpr\mathverifyFN+\mathverifyFP\relax{} in \maAnswers{} here for Math-Verify), so reading them is cheap compared with the cost of a wrong conclusion.
+  \item \textbf{Do not use string-normalising checkers for comparisons between systems with different output styles.} The Hendrycks normaliser reorders the top of a current leaderboard.
+  \item \textbf{Release full outputs.} This study was possible only because MathArena released every answer with its verdict.
+\end{enumerate}
+
+\section{Limitations}\label{sec:limits}
+
+\begin{itemize}
+  \item \textbf{One benchmark.} All large-scale results come from one competition (30 problems). Effects on other answer types, such as integers only (AIME) or proofs, will differ; on our own AIME runs the three checkers barely disagreed.
+  \item \textbf{The reference is not ground truth.} MathArena's verdicts come from a parser with an LLM-judge fallback and manual review. Our audit found them right in every clear-cut case we checked, but we read only a sample of agreements, and the audit was done by one rater. A second, independent rater would strengthen the result.
+  \item \textbf{Choice of statistic.} The permutation test uses one statistic, the between-model sum of squares of problem-centred misses. An earlier exploratory version of this analysis, using a different statistic, gave a weaker result for Math-Verify without Grok 3 Mini ($p=0.03$). The direction of the conclusion did not change, but the strength of evidence for Math-Verify alone depends on the choice of statistic and on that one model.
+  \item \textbf{The pilot is small and uses our checker as a starting point.} Our checker was improved on the pilot's own outputs; the true verdicts there come from reading every disagreement, so errors shared by all three checkers would be missed.
+  \item \textbf{No evidence yet that a published method comparison flips.} We show that rankings of models move and that a within-model gain is understated. We have not found a published improvement claim that reverses under a different checker; that requires released outputs from both arms of a method comparison.
+\end{itemize}
+
+\section{Conclusion}
+
+Answer checkers do not fail at random. They fail on particular ways of writing an answer, models differ systematically in how they write, and so checker error depends on the model or method being evaluated. On a public leaderboard of \maModels{} models this is enough to move the top model by several places under a still-common checker, and in a controlled comparison it understated a real improvement by about 30\%. Checker error should be measured and reported per system, like any other source of differential measurement error.
+
+\paragraph{Reproducibility.}
+The repository (\repo) contains the benchmark, all model outputs from our runs with their logs, a ledger of every use of the test split, the re-grading scripts, the audit, and \texttt{bench/paper\_numbers.py}, which regenerates every number, table and figure in this paper from saved files in about 30 seconds without a GPU. MathArena's outputs are not redistributed; a script downloads the pinned revision.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\appendix
+\section{Audit details}\label{app:audit}
+
+\paragraph{Math-Verify vs.\ MathArena (all 26 disagreements).}
+\begin{itemize}
+  \item \textbf{22 correct answers rejected by Math-Verify; MathArena right in all 22.} Ten are Grok 3 Mini (low) matrix-boxed answers (problems 2, 7, 8, 10, 25). Four are Unicode roots from o4-mini (problems 25, 28) and one from o1 (problem 28, written as \texttt{⎧ MD = √6 ⎫}). Three box an equation rather than a value (Kimi K2 Thinking, GPT-5.1, o4-mini). The rest: a factorial product followed by its 33-digit value (GPT OSS 20B), a missing backslash in \texttt{boxed\{14 + 4\textbackslash sqrt\{37\}\}} (GPT-5-nano), an unboxed final fraction $2025/101$ (o4-mini), and $2\sqrt{197+28\sqrt{37}}$, which equals $14+4\sqrt{37}$ (o4-mini).
+  \item \textbf{4 wrong answers accepted by Math-Verify.} One cut-off answer with no final answer (MathArena right). Three decimal approximations of $1-2/\pi$ (o3, o3-mini, Phi-4-reasoning-plus), rejected by MathArena; we count these as grading policy.
+\end{itemize}
+
+\paragraph{Random samples} (seed 2026; listed by \texttt{audits/print\_samples.py}).
+30 of the \hendrycksFN{} Hendrycks rejections of MathArena-correct answers: all 30 are correct values in another form (reordered roots, two roots boxed separately so the checker sees only the last, $\frac{9}{\sqrt{23}}$, $\frac{\sqrt{570}}{12}$, $26!\cdot2^{25}$, labelled or Unicode answers, zero-padded integers; one answer with no box). 30 of the \oursFN{} rejections by our checker: all 30 correct values (mostly $26!\cdot2^{25}$, which our checker cannot evaluate, and Grok 3 Mini (low) formats). 40 answers rejected by all four judges: none is correct (95\% upper bound on the shared false-negative rate about 7\%).
+
+\end{document}
